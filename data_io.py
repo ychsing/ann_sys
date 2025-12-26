@@ -1,11 +1,23 @@
 import json
+import os
 
-def load_cases(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_cases(working_file):
+    if not os.path.exists(working_file):
+        return None
 
-def save_cases(path, cases):
-    with open(path, "w", encoding="utf-8") as f:
+    try:
+        with open(working_file, "r", encoding="utf-8") as f:
+            cases = json.load(f)
+    except Exception:
+        return None
+
+    if not isinstance(cases, dict):
+        return None
+
+    return cases
+
+def save_cases(working_file, cases):
+    with open(working_file, "w", encoding="utf-8") as f:
         json.dump(cases, f, indent=2, ensure_ascii=False)
 
 def is_verified(case):
