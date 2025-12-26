@@ -151,3 +151,5 @@ with open(working_file, "r", encoding="utf-8") as f:
     )
 if all_verified(cases):
     st.success("所有病例已標註完成")
+
+st.warning("⚠️ 本平台不保證資料長期保存，請隨時下載備份")
