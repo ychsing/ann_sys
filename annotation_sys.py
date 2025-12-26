@@ -205,7 +205,7 @@ with col_l:
                     [0, 1],
                     index=v,
                     horizontal=True,
-                    key=field,
+                    key=f"{case_id}_{field}",
                     help=(
                         "是否為首次轉移" if field == "First_meta"
                         else "是否有骨轉移" if field == "Bone"
@@ -233,7 +233,8 @@ with col_l:
                 value=v or "",
                 placeholder=(
                     "YYYY-MM-DD" if field == "First_meta_DATE" else ""
-                )
+                ),
+                key=f"{case_id}_{field}"
             )
 
     # =====================================================
