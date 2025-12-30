@@ -1,11 +1,12 @@
 import streamlit as st
+import json
+import os
+
 from auth_simple import require_user
 from data_io import load_cases, save_cases, find_first_unverified_index
 from annotation_logic import save_annotation_for_user
 from date_utils import normalize_date_to_ymd
 from report_ui import render_reports
-import json
-import os
 from user_workspace import get_working_file
 
 # =====================================================
@@ -21,31 +22,15 @@ st.set_page_config(
 # =====================================================
 st.markdown("""
 <style>
-h1 { font-size: 1.8rem; margin-bottom: 0.2rem; }
-h2, h3 { margin-top: 0.6rem; }
-
 .notice-box {
     background-color: #f8fafc;
     border-left: 4px solid #2563eb;
     padding: 0.6rem 0.8rem;
     border-radius: 6px;
-    font-size: 0.9rem;
 }
-
-.success-box {
-    background-color: #ecfdf5;
-    border-left: 4px solid #16a34a;
-    padding: 0.6rem 0.8rem;
-    border-radius: 6px;
-    font-size: 0.9rem;
-}
-
-.warning-box {
-    background-color: #fff7ed;
-    border-left: 4px solid #f97316;
-    padding: 0.6rem 0.8rem;
-    border-radius: 6px;
-    font-size: 0.9rem;
+.caption {
+    font-size: 0.85rem;
+    color: #555;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -54,14 +39,14 @@ h2, h3 { margin-top: 0.6rem; }
 # Login
 # =====================================================
 current_user = require_user()
-st.sidebar.success(f"👤 {current_user}")
+st.sidebar.success(f":bust_in_silhouette: {current_user}")
 
 working_file = get_working_file(current_user)
 
 st.markdown("""
 <div class="notice-box">
-🔐 <b>資料隱私說明</b><br>
-本系統不會公開、分享或外流使用者上傳之資料，所有資料僅供本人操作與下載。
+<b>資料隱私說明</b><br>
+本系統不會公開、分享或外流使用者上傳之資料，資料僅供本人操作與下載。
 </div>
 """, unsafe_allow_html=True)
 
@@ -70,14 +55,11 @@ st.markdown("""
 # =====================================================
 if not os.path.exists(working_file):
     st.info("請先上傳標註檔案（JSON）")
-
     uploaded = st.file_uploader("上傳資料檔", type=["json"])
-
     if not uploaded:
         st.stop()
 
     cases = json.load(uploaded)
-
     with open(working_file, "w", encoding="utf-8") as f:
         json.dump(cases, f, indent=2, ensure_ascii=False)
 
@@ -88,250 +70,231 @@ if not os.path.exists(working_file):
 # Load data
 # =====================================================
 cases = load_cases(working_file)
-
 if cases is None:
-    st.error("資料讀取失敗，請重新上傳檔案")
+    st.error("資料讀取失敗")
     st.stop()
 
 if "case_ids" not in st.session_state:
     st.session_state.case_ids = list(cases.keys())
 
-if "idx" not in st.session_state:
+# =====================================================
+# ⭐ 重啟時：跳到第一筆尚未標註 ⭐
+# =====================================================
+if "prev_case_id" not in st.session_state:
     st.session_state.idx = find_first_unverified_index(
         cases, st.session_state.case_ids
     )
 
+# =====================================================
+# Current case
+# =====================================================
 case_id = st.session_state.case_ids[st.session_state.idx]
 case = cases[case_id]
 
-st.title(
-    f"Case {st.session_state.idx + 1} / {len(st.session_state.case_ids)} — {case_id}"
-)
+# =====================================================
+# Helper
+# =====================================================
+def is_user_annotation(case, user):
+    return user in case.get("annotation", {}).get("by_user", {})
+
+def ensure_case_initialized(case_id, source):
+    for f in BINARY_FIELDS:
+        key = f"{case_id}_{f}"
+        if key not in st.session_state:
+            st.session_state[key] = int(source.get(f, 0) or 0)
+
+    for f in TEXT_FIELDS:
+        key = f"{case_id}_{f}"
+        if key not in st.session_state:
+            st.session_state[key] = "" if source.get(f) is None else str(source.get(f))
+
+    prev_key = f"{case_id}_First_meta_prev"
+    if prev_key not in st.session_state:
+        st.session_state[prev_key] = source.get("First_meta", 0)
 
 # =====================================================
-# Layout
+# Progress bar
 # =====================================================
+total = len(st.session_state.case_ids)
+done = sum(
+    1 for cid in st.session_state.case_ids
+    if is_user_annotation(cases[cid], current_user)
+)
+
+st.progress(done / total, text=f"進度：{done} / {total}")
+
+# =====================================================
+# Field definitions
+# =====================================================
+BINARY_FIELDS = [
+    "First_meta",
+    "Bone",
+    "bone_meta_gt3",
+    "Lymph_node",
+    "Lung",
+    "Liver",
+    "Brain",
+    "Adrenal_gland",
+    "Non_axial_involved",
+]
+
+TEXT_FIELDS = [
+    "First_meta_DATE",
+    "Non_axial_list",
+    "Other",
+]
+
+FIELD_ORDER = [
+    "First_meta",
+    "First_meta_DATE",
+    "Bone",
+    "bone_meta_gt3",
+    "Lymph_node",
+    "Lung",
+    "Liver",
+    "Brain",
+    "Adrenal_gland",
+    "Non_axial_involved",
+    "Non_axial_list",
+    "Other",
+]
+
+# =====================================================
+# Init / restore
+# =====================================================
+restore_gpt = st.session_state.pop("restore_gpt", False)
+
+source = (
+    case.get("annotation", {})
+    .get("by_user", {})
+    .get(current_user, {})
+    .get("data")
+    or case["gpt_oss"]["instruction_med"]
+)
+
+if restore_gpt:
+    source = case["gpt_oss"]["instruction_med"]
+
+# ✅ 關鍵修正：保證所有欄位已初始化
+ensure_case_initialized(case_id, source)
+
+if restore_gpt:
+    source = case["gpt_oss"]["instruction_med"]
+
+prev_case = st.session_state.get("prev_case_id")
+if prev_case != case_id or restore_gpt:
+    for f in BINARY_FIELDS:
+        st.session_state[f"{case_id}_{f}"] = int(source.get(f, 0) or 0)
+    for f in TEXT_FIELDS:
+        st.session_state[f"{case_id}_{f}"] = "" if source.get(f) is None else str(source.get(f))
+    st.session_state[f"{case_id}_First_meta_prev"] = source.get("First_meta", 0)
+
+st.session_state["prev_case_id"] = case_id
+
+# =====================================================
+# Title & layout
+# =====================================================
+st.title(f"Case {st.session_state.idx + 1} / {total} — {case_id}")
+
+status = (
+    ":pencil2: 已標註"
+    if is_user_annotation(case, current_user)
+    else ":robot_face: 電腦建議標註"
+)
+
 col_l, col_r = st.columns([1, 2])
 
 # =====================================================
 # Left: Annotation
 # =====================================================
-# ===== Left: Annotation =====
 with col_l:
-    st.subheader("Annotation")
+    st.subheader(f"Annotation - {status}")
 
-    gpt = case["gpt_oss"]["instruction_med"]
-    user_anno = case.get("annotation", {}).get("by_user", {}).get(current_user)
-    default_data = user_anno["data"] if user_anno else gpt
+    st.radio("First_meta", [0, 1], horizontal=True, key=f"{case_id}_First_meta")
 
-    if user_anno:
-        st.markdown(
-            "<div class='success-box'>✏️ 顯示您上次的標註內容</div>",
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            "<div class='notice-box'>🤖 顯示模型建議標註</div>",
-            unsafe_allow_html=True
-        )
+    prev = st.session_state[f"{case_id}_First_meta_prev"]
+    now = st.session_state[f"{case_id}_First_meta"]
 
-    final = {}
+    if prev == 1 and now == 0:
+        for f in BINARY_FIELDS:
+            if f != "First_meta":
+                st.session_state[f"{case_id}_{f}"] = 0
+        for f in TEXT_FIELDS:
+            st.session_state[f"{case_id}_{f}"] = ""
 
-    # =====================================================
-    # 欄位順序（與 gpt_oss.instruction_med 完全對齊）
-    # =====================================================
-    FIELD_ORDER = [
-        "First_meta",
-        "First_meta_DATE",
-
-        "Bone",
-        "bone_meta_gt3",
-
-        "Lymph_node",
-        "Lung",
-        "Liver",
-        "Brain",
-        "Adrenal_gland",
-
-        "Non_axial_involved",
-        "Non_axial_list",
-
-        "Other",
-    ]
+    st.session_state[f"{case_id}_First_meta_prev"] = now
 
     for field in FIELD_ORDER:
+        if field == "First_meta":
+            continue
+        if field == "First_meta_DATE" and now != 1:
+            continue
+        if field == "bone_meta_gt3" and st.session_state[f"{case_id}_Bone"] != 1:
+            continue
+        if field == "Non_axial_list" and st.session_state[f"{case_id}_Non_axial_involved"] != 1:
+            continue
 
-        # ==========================================
-        # First_meta → First_meta_DATE
-        # ==========================================
-        if field == "First_meta_DATE":
-            if final.get("First_meta", default_data.get("First_meta", 0)) != 1:
-                final[field] = ""
-                continue
-
-        # ==========================================
-        # Bone → bone_meta_gt3
-        # ==========================================
-        if field == "bone_meta_gt3":
-            if final.get("Bone", default_data.get("Bone", 0)) != 1:
-                final[field] = 0
-                continue
-
-        # ==========================================
-        # Non_axial_involved → Non_axial_list
-        # ==========================================
-        if field == "Non_axial_list":
-            if final.get(
-                "Non_axial_involved",
-                default_data.get("Non_axial_involved", 0)
-            ) != 1:
-                final[field] = ""
-                continue
-
-        v = default_data.get(field)
-
-        # ==========================================
-        # Binary 欄位（0 / 1）→ 左右兩欄
-        # ==========================================
-        if isinstance(v, int):
-            col_label, col_input = st.columns([1, 2])
-
-            with col_label:
-                st.markdown(f"**{field}**")
-
-            with col_input:
-                final[field] = st.radio(
-                    "",
-                    [0, 1],
-                    index=v,
-                    horizontal=True,
-                    key=f"{case_id}_{field}",
-                    help=(
-                        "是否為首次轉移" if field == "First_meta"
-                        else "是否有骨轉移" if field == "Bone"
-                        else "是否超過三個骨轉移病灶" if field == "bone_meta_gt3"
-                        else "是否有非軸向骨轉移" if field == "Non_axial_involved"
-                        else "是否有其他轉移部位" if field == "Other"
-                        else None
-                    )
-                )
-
-        # ==========================================
-        # Text 欄位（DATE / LIST）
-        # ==========================================
+        if field in BINARY_FIELDS:
+            st.radio(field, [0, 1], horizontal=True, key=f"{case_id}_{field}")
         else:
-            label = (
-                "First metastasis date (YYYY-MM-DD)"
-                if field == "First_meta_DATE"
-                else "Non-axial involved sites"
-                if field == "Non_axial_list"
-                else field
-            )
+            st.text_input(field, key=f"{case_id}_{field}")
 
-            final[field] = st.text_input(
-                label,
-                value=v or "",
-                placeholder=(
-                    "YYYY-MM-DD" if field == "First_meta_DATE" else ""
-                ),
-                key=f"{case_id}_{field}"
-            )
+    final = {f: int(st.session_state[f"{case_id}_{f}"]) for f in BINARY_FIELDS}
+    final.update({f: st.session_state[f"{case_id}_{f}"] for f in TEXT_FIELDS})
 
-    # =====================================================
-    # 儲存前最終防呆（臨床等級）
-    # =====================================================
-    if final.get("First_meta") != 1:
-        final["First_meta_DATE"] = ""
+    if final["First_meta"] != 1:
+        for f in BINARY_FIELDS:
+            if f != "First_meta":
+                final[f] = 0
+        for f in TEXT_FIELDS:
+            final[f] = ""
 
-    if final.get("Bone") != 1:
-        final["bone_meta_gt3"] = 0
+    st.caption("請使用下方按鈕進行操作")
 
-    if final.get("Non_axial_involved") != 1:
-        final["Non_axial_list"] = ""
+    col_prev, col_save, col_next = st.columns([1, 1.5, 2])
 
-    # =====================================================
-    # Buttons
-    # =====================================================
-    btn1, btn2 = st.columns(2)
+    with col_prev:
+        if st.button("上一筆", use_container_width=True):
+            if st.session_state.idx > 0:
+                st.session_state.idx -= 1
+                st.rerun()
 
-    with btn1:
-        if st.button("💾 儲存標註", use_container_width=True):
-            changed = save_annotation_for_user(case, current_user, final)
-            save_cases(working_file, cases)
-            st.success("已儲存" if changed else "內容未變")
-
-    with btn2:
-        if st.button("✅ 沒問題，下一筆", use_container_width=True):
+    with col_save:
+        if st.button("儲存", use_container_width=True):
             save_annotation_for_user(case, current_user, final)
             save_cases(working_file, cases)
-            st.session_state.idx += 1
+            st.success("已儲存")
+
+    with col_next:
+        if st.button("儲存並下一筆 ▶", use_container_width=True):
+            save_annotation_for_user(case, current_user, final)
+            save_cases(working_file, cases)
+            if st.session_state.idx < total - 1:
+                st.session_state.idx += 1
             st.rerun()
+
+    if st.button("還原電腦標註", use_container_width=True):
+        st.session_state["restore_gpt"] = True
+        st.rerun()
+
+# =====================================================
 # Right: Reports
 # =====================================================
 with col_r:
-    raw = final.get("First_meta_DATE")
-    first_meta_date, _ = normalize_date_to_ymd(raw)
+    first_meta_date, _ = normalize_date_to_ymd(final.get("First_meta_DATE"))
     render_reports(case, first_meta_date)
 
 # =====================================================
-# Navigation & Status
+# Download
 # =====================================================
-def is_annotated_by_user(case, user_email):
-    return user_email in case.get("annotation", {}).get("by_user", {})
-
-if is_annotated_by_user(case, current_user):
-    st.caption("🟢 已由您標註")
-else:
-    st.caption("🟡 尚未標註")
-
-col_prev, col_next = st.columns(2)
-
-with col_prev:
-    if st.button("⬅ 上一筆") and st.session_state.idx > 0:
-        st.session_state.idx -= 1
-        st.rerun()
-
-with col_next:
-    if st.button("下一筆 ➡") and st.session_state.idx < len(st.session_state.case_ids) - 1:
-        st.session_state.idx += 1
-        st.rerun()
-
-done = sum(
-    1 for c in cases.values()
-    if c.get("annotation", {}).get("by_user")
-)
-total = len(cases)
-st.caption(f"📊 標註進度：{done} / {total}")
-
-# =====================================================
-# Download & Completion
-# =====================================================
-st.markdown("<hr>", unsafe_allow_html=True)
-
+st.divider()
 with open(working_file, "r", encoding="utf-8") as f:
     st.download_button(
-        "⬇️ 下載目前標註結果（JSON）",
+        "下載目前標註結果（JSON）",
         f,
         file_name="annotation_result.json",
         mime="application/json",
         use_container_width=True
     )
 
-def all_verified(cases):
-    return all(
-        case.get("annotation", {}).get("by_user")
-        for case in cases.values()
-    )
-
-if all_verified(cases):
-    st.markdown(
-        "<div class='success-box'>🎉 所有病例已完成標註</div>",
-        unsafe_allow_html=True
-    )
-
-st.markdown("""
-<div class="warning-box">
-⚠️ <b>重要提醒</b><br>
-本平台不保證資料長期保存，請於標註過程中隨時下載備份。
-</div>
-""", unsafe_allow_html=True)
+st.caption(":warning: 本平台不保證資料長期保存，請隨時下載備份")
