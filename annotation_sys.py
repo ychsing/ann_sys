@@ -197,9 +197,9 @@ st.session_state["prev_case_id"] = case_id
 st.title(f"Case {st.session_state.idx + 1} / {total} — {case_id}")
 
 status = (
-    ":pencil2: 已標註"
+    "✏️ 已標註"
     if is_user_annotation(case, current_user)
-    else ":robot_face: 電腦建議標註"
+    else "🤖 電腦建議標註"
 )
 
 col_l, col_r = st.columns([1, 2])
