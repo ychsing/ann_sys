@@ -1,4 +1,5 @@
 import streamlit as st
+from datetime import datetime
 import json
 import os
 
@@ -39,30 +40,45 @@ st.markdown("""
 # Login
 # =====================================================
 current_user = require_user()
-st.sidebar.success(f":bust_in_silhouette: {current_user}")
+st.sidebar.success(f"👤 {current_user}")
 
 working_file = get_working_file(current_user)
+
+# =====================================================
+# 🔄 Reset / Re-upload (Sidebar)
+# =====================================================
+if st.sidebar.button("🔄 重新上傳標註檔案"):
+    st.session_state.clear()
+    if os.path.exists(working_file):
+        os.remove(working_file)
+    st.rerun()
 
 st.markdown("""
 <div class="notice-box">
 <b>資料隱私說明</b><br>
-本系統不會公開、分享或外流使用者上傳之資料，資料僅供本人操作與下載。
+本系統為 session-only 系統，每次重啟皆需重新上傳檔案，不會保留任何使用紀錄。
 </div>
 """, unsafe_allow_html=True)
 
 # =====================================================
-# Upload (first time only)
+# Upload (EVERY NEW SESSION)
 # =====================================================
-if not os.path.exists(working_file):
+if "uploaded" not in st.session_state:
+    # 保證磁碟上也不留殘檔
+    if os.path.exists(working_file):
+        os.remove(working_file)
+
     st.info("請先上傳標註檔案（JSON）")
     uploaded = st.file_uploader("上傳資料檔", type=["json"])
     if not uploaded:
         st.stop()
 
     cases = json.load(uploaded)
+
     with open(working_file, "w", encoding="utf-8") as f:
         json.dump(cases, f, indent=2, ensure_ascii=False)
 
+    st.session_state.uploaded = True
     st.success("檔案已上傳，開始標註")
     st.rerun()
 
@@ -78,7 +94,7 @@ if "case_ids" not in st.session_state:
     st.session_state.case_ids = list(cases.keys())
 
 # =====================================================
-# ⭐ 重啟時：跳到第一筆尚未標註 ⭐
+# ⭐ 重啟 / 新 session：跳到第一筆尚未標註 ⭐
 # =====================================================
 if "prev_case_id" not in st.session_state:
     st.session_state.idx = find_first_unverified_index(
@@ -92,25 +108,38 @@ case_id = st.session_state.case_ids[st.session_state.idx]
 case = cases[case_id]
 
 # =====================================================
-# Helper
+# Helpers
 # =====================================================
 def is_user_annotation(case, user):
     return user in case.get("annotation", {}).get("by_user", {})
 
+BINARY_FIELDS = [
+    "First_meta", "Bone", "bone_meta_gt3", "Lymph_node",
+    "Lung", "Liver", "Brain", "Adrenal_gland", "Non_axial_involved"
+]
+
+TEXT_FIELDS = [
+    "First_meta_DATE", "Non_axial_list", "Other"
+]
+
+FIELD_ORDER = [
+    "First_meta", "First_meta_DATE", "Bone", "bone_meta_gt3",
+    "Lymph_node", "Lung", "Liver", "Brain",
+    "Adrenal_gland", "Non_axial_involved", "Non_axial_list", "Other"
+]
+
 def ensure_case_initialized(case_id, source):
     for f in BINARY_FIELDS:
-        key = f"{case_id}_{f}"
-        if key not in st.session_state:
-            st.session_state[key] = int(source.get(f, 0) or 0)
-
+        st.session_state.setdefault(f"{case_id}_{f}", int(source.get(f, 0) or 0))
     for f in TEXT_FIELDS:
-        key = f"{case_id}_{f}"
-        if key not in st.session_state:
-            st.session_state[key] = "" if source.get(f) is None else str(source.get(f))
-
-    prev_key = f"{case_id}_First_meta_prev"
-    if prev_key not in st.session_state:
-        st.session_state[prev_key] = source.get("First_meta", 0)
+        st.session_state.setdefault(
+            f"{case_id}_{f}",
+            "" if source.get(f) is None else str(source.get(f))
+        )
+    st.session_state.setdefault(
+        f"{case_id}_First_meta_prev",
+        source.get("First_meta", 0)
+    )
 
 # =====================================================
 # Progress bar
@@ -120,44 +149,7 @@ done = sum(
     1 for cid in st.session_state.case_ids
     if is_user_annotation(cases[cid], current_user)
 )
-
 st.progress(done / total, text=f"進度：{done} / {total}")
-
-# =====================================================
-# Field definitions
-# =====================================================
-BINARY_FIELDS = [
-    "First_meta",
-    "Bone",
-    "bone_meta_gt3",
-    "Lymph_node",
-    "Lung",
-    "Liver",
-    "Brain",
-    "Adrenal_gland",
-    "Non_axial_involved",
-]
-
-TEXT_FIELDS = [
-    "First_meta_DATE",
-    "Non_axial_list",
-    "Other",
-]
-
-FIELD_ORDER = [
-    "First_meta",
-    "First_meta_DATE",
-    "Bone",
-    "bone_meta_gt3",
-    "Lymph_node",
-    "Lung",
-    "Liver",
-    "Brain",
-    "Adrenal_gland",
-    "Non_axial_involved",
-    "Non_axial_list",
-    "Other",
-]
 
 # =====================================================
 # Init / restore
@@ -175,11 +167,7 @@ source = (
 if restore_gpt:
     source = case["gpt_oss"]["instruction_med"]
 
-# ✅ 關鍵修正：保證所有欄位已初始化
 ensure_case_initialized(case_id, source)
-
-if restore_gpt:
-    source = case["gpt_oss"]["instruction_med"]
 
 prev_case = st.session_state.get("prev_case_id")
 if prev_case != case_id or restore_gpt:
@@ -249,7 +237,7 @@ with col_l:
         for f in TEXT_FIELDS:
             final[f] = ""
 
-    st.caption("請使用下方按鈕進行操作")
+    st.caption("請使用下方按鈕")
 
     col_prev, col_save, col_next = st.columns([1, 1.5, 2])
 
@@ -285,16 +273,19 @@ with col_r:
     render_reports(case, first_meta_date)
 
 # =====================================================
-# Download
+# Download (session snapshot)
 # =====================================================
 st.divider()
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+file_name = f"annotation_result_{timestamp}.json"
+
 with open(working_file, "r", encoding="utf-8") as f:
     st.download_button(
         "下載目前標註結果（JSON）",
         f,
-        file_name="annotation_result.json",
+        file_name=file_name,   # ✅ 注意：是 file_name
         mime="application/json",
         use_container_width=True
     )
 
-st.caption(":warning: 本平台不保證資料長期保存，請隨時下載備份")
+st.caption("⚠️ 本系統為 session-only，請隨時下載備份")
